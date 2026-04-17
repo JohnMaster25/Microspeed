@@ -1,0 +1,6 @@
+{
+  "name": "Micro Machines Prototype",
+  "description": "Un prototipo de juego de carreras top-down tipo Micro Machines con mecánicas de conducción estilo tanque y físicas de inercia y colisión.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
