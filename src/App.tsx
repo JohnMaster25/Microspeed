@@ -110,6 +110,70 @@ for (let i = 0; i < 500; i++) {
     });
 }
 
+const VirtualJoystick = ({ onMove, onRelease }: { onMove: (x: number, y: number) => void, onRelease: () => void }) => {
+    const baseRef = useRef<HTMLDivElement>(null);
+    const stickRef = useRef<HTMLDivElement>(null);
+    const [active, setActive] = useState(false);
+    
+    const handlePointerDown = (e: React.PointerEvent) => {
+        setActive(true);
+        updateJoystick(e);
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    };
+
+    const handlePointerMove = (e: React.PointerEvent) => {
+        if (!active) return;
+        updateJoystick(e);
+    };
+
+    const handlePointerUp = (e: React.PointerEvent) => {
+        setActive(false);
+        if (stickRef.current) {
+            stickRef.current.style.transform = `translate(0px, 0px)`;
+        }
+        onRelease();
+        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    };
+
+    const updateJoystick = (e: React.PointerEvent) => {
+        if (!baseRef.current || !stickRef.current) return;
+        const rect = baseRef.current.getBoundingClientRect();
+        const baseCenterX = rect.left + rect.width / 2;
+        const baseCenterY = rect.top + rect.height / 2;
+        
+        let dx = e.clientX - baseCenterX;
+        let dy = e.clientY - baseCenterY;
+        
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const maxDist = rect.width / 2;
+        
+        if (distance > maxDist) {
+            dx = (dx / distance) * maxDist;
+            dy = (dy / distance) * maxDist;
+        }
+        
+        stickRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
+        onMove(dx / maxDist, dy / maxDist);
+    };
+
+    return (
+        <div 
+            ref={baseRef}
+            className="w-32 h-32 rounded-full border-2 border-zinc-500/30 bg-zinc-900/40 backdrop-blur-md flex items-center justify-center pointer-events-auto touch-none shadow-[0_0_20px_rgba(0,243,255,0.1)]"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+        >
+            <div 
+                ref={stickRef}
+                className="w-12 h-12 rounded-full bg-[#00f3ff] shadow-[0_0_15px_rgba(0,243,255,0.6)] pointer-events-none transition-transform duration-75"
+                style={{ transform: 'translate(0px, 0px)' }}
+            />
+        </div>
+    );
+};
+
 export default function App() {
   const [view, setView] = useState<'lobby' | 'creating' | 'joining' | 'room_lobby' | 'playing'>('lobby');
   const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
@@ -125,6 +189,7 @@ export default function App() {
   const myIdRef = useRef<string>('');
   const handleDataRef = useRef<((data: any, conn: DataConnection) => void) | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const touchKeysRef = useRef<Record<string, any>>({ ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, joyX: 0, joyY: 0, joyActive: false });
   
   // Estado de juego persistente para evitar resets al redimensionar
   const gameStateRef = useRef<any>(null);
@@ -465,6 +530,42 @@ export default function App() {
     let lastNetworkSync = 0;
 
     const gameLoop = () => {
+       // --- Soporte Móvil y Gamepad ---
+       let gpUp = false, gpDown = false, gpLeft = false, gpRight = false;
+       const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+       const gp = gamepads[0];
+       if (gp) {
+           // D-pad (12: up, 13: down, 14: left, 15: right)
+           if (gp.buttons[12]?.pressed) gpUp = true;
+           if (gp.buttons[13]?.pressed) gpDown = true;
+           if (gp.buttons[14]?.pressed) gpLeft = true;
+           if (gp.buttons[15]?.pressed) gpRight = true;
+           
+           // Joystick Izquierdo (Axes 0: X, Axes 1: Y)
+           if (gp.axes[1] < -0.3) gpUp = true;
+           if (gp.axes[1] > 0.3) gpDown = true;
+           if (gp.axes[0] < -0.3) gpLeft = true;
+           if (gp.axes[0] > 0.3) gpRight = true;
+           
+           // Gatillos/Botones A/B
+           if (gp.buttons[0]?.pressed || gp.buttons[7]?.pressed) gpUp = true; // A o R2 (Acelerar)
+           if (gp.buttons[1]?.pressed || gp.buttons[6]?.pressed) gpDown = true; // B o L2 (Frenar)
+           
+           // Espacio/Restart -> Start (Boton 9)
+           if (gp.buttons[9]?.pressed && gs.mode === "finished") {
+               if (!gameStateRef.current.gamepadRestartLock) {
+                   gameStateRef.current.gamepadRestartLock = true;
+                   resetRace();
+                   if (!isSolo) {
+                       const rMsg = { type: 'restart' };
+                       Array.from(connsRef.current.values()).forEach((c: any) => { if (c.open) c.send(rMsg); });
+                   }
+               }
+           } else {
+               gameStateRef.current.gamepadRestartLock = false;
+           }
+       }
+
        // --- Físicas (Sólo afecta a tu coche Local) ---
        const car = gs.car;
        car.prevX = car.x;
@@ -472,13 +573,33 @@ export default function App() {
        car.prevAngle = car.angle;
 
        // Comportamiento estilo propulsor Flotante / Nave pura (Asteroids)
-       if (keys.ArrowLeft) car.angle -= car.rotationSpeed;
-       if (keys.ArrowRight) car.angle += car.rotationSpeed;
+       if (keys.ArrowLeft || gpLeft || touchKeysRef.current.ArrowLeft) car.angle -= car.rotationSpeed;
+       if (keys.ArrowRight || gpRight || touchKeysRef.current.ArrowRight) car.angle += car.rotationSpeed;
 
-       // Aceleración y Frenado 2D (Aplica fuerza sólo hacia donde miras)
-       if (keys.ArrowUp) { car.vx += Math.cos(car.angle) * car.acceleration; car.vy += Math.sin(car.angle) * car.acceleration; }
+       // Móvil Joystick Omnidireccional (Estilo Asteroids moderno)
+       if (touchKeysRef.current.joyActive) {
+           const jx = touchKeysRef.current.joyX;
+           const jy = touchKeysRef.current.joyY;
+           const dist = Math.min(1, Math.hypot(jx, jy));
+           
+           if (dist > 0.1) {
+               // Encontrar ángulo del joystick
+               const targetAngle = Math.atan2(jy, jx);
+               // Girar la nave rápidamente hacia el vector del joystick
+               let diff = targetAngle - car.angle;
+               diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+               car.angle += diff * 0.25; 
+               
+               // Acelerar automáticamente en esa dirección dependiendo de la presión (distancia central)
+               car.vx += Math.cos(car.angle) * (car.acceleration * dist);
+               car.vy += Math.sin(car.angle) * (car.acceleration * dist);
+           }
+       }
+
+       // Aceleración y Frenado 2D Clásico
+       if (keys.ArrowUp || gpUp || touchKeysRef.current.ArrowUp) { car.vx += Math.cos(car.angle) * car.acceleration; car.vy += Math.sin(car.angle) * car.acceleration; }
        // Frenar actúa como retropropulsor
-       if (keys.ArrowDown) { car.vx -= Math.cos(car.angle) * (car.acceleration * 0.7); car.vy -= Math.sin(car.angle) * (car.acceleration * 0.7); }
+       if (keys.ArrowDown || gpDown || touchKeysRef.current.ArrowDown) { car.vx -= Math.cos(car.angle) * (car.acceleration * 0.7); car.vy -= Math.sin(car.angle) * (car.acceleration * 0.7); }
 
        // Inercia global constante (La nave flota libremente en el espacio 2D)
        car.vx *= 0.985; 
@@ -585,16 +706,22 @@ export default function App() {
        // --- RENDERIZADO EN CANVAS ---
        ctx.fillStyle = "#1e1e24"; ctx.fillRect(0, 0, canvas.width, canvas.height); 
        
+       const zoomFactor = windowSize.width < 768 ? 0.65 : 1.0;
+       const viewW = canvas.width / zoomFactor;
+       const viewH = canvas.height / zoomFactor;
+
        ctx.save();
-       const camX = car.x - canvas.width / 2;
-       const camY = car.y - canvas.height / 2;
+       ctx.scale(zoomFactor, zoomFactor);
+
+       const camX = car.x - viewW / 2;
+       const camY = car.y - viewH / 2;
        ctx.translate(-camX, -camY);
 
        // Dibujar Decoraciones
        const screenPad = 200;
        for (const dec of mapDecorations) {
-           if (dec.x < camX - screenPad || dec.x > camX + canvas.width + screenPad ||
-               dec.y < camY - screenPad || dec.y > camY + canvas.height + screenPad) {
+           if (dec.x < camX - screenPad || dec.x > camX + viewW + screenPad ||
+               dec.y < camY - screenPad || dec.y > camY + viewH + screenPad) {
                continue;
            }
            ctx.save();
@@ -692,19 +819,29 @@ export default function App() {
        ctx.restore();
 
        // UI
-       ctx.fillStyle = "#e0e0e0"; ctx.font = "bold 24px monospace"; ctx.textAlign = "left";
+       const isMobile = windowSize.width < 768;
+       ctx.fillStyle = "#e0e0e0"; ctx.font = isMobile ? "bold 20px monospace" : "bold 24px monospace"; ctx.textAlign = "left";
        const elapsed = gs.mode === "wait_start" ? 0 : (gs.mode === "finished" ? gs.lapTime : Date.now() - gs.startTime);
        const ms = Math.floor((elapsed % 1000) / 10).toString().padStart(2, '0');
        const sec = Math.floor((elapsed / 1000) % 60).toString().padStart(2, '0');
        const min = Math.floor(elapsed / 60000).toString().padStart(2, '0');
-       ctx.fillText(`${min}:${sec}.${ms}`, 20, 35);
+       ctx.fillText(`${min}:${sec}.${ms}`, 20, isMobile ? 30 : 35);
        
        ctx.textAlign = "right"; ctx.fillStyle = car.color;
-       ctx.fillText(`VUELTA: ${Math.min(gs.localLap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, 35);
+       if (isMobile) {
+           ctx.font = "bold 28px monospace";
+           ctx.fillText(`${Math.min(gs.localLap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, 35);
+           ctx.font = "bold 12px monospace";
+           ctx.fillText("VUELTA", canvas.width - 20, 58);
+       } else {
+           ctx.font = "bold 24px monospace";
+           ctx.fillText(`VUELTA: ${Math.min(gs.localLap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, 35);
+       }
        if (!isSolo) {
-           ctx.font = "bold 16px monospace"; let yOffset = 60;
+           ctx.font = isMobile ? "bold 12px monospace" : "bold 16px monospace"; 
+           let yOffset = isMobile ? 80 : 60;
            Object.entries(gs.remoteCars).forEach(([id, rcar]: [string, any]) => {
-                ctx.fillStyle = rcar.color; ctx.fillText(`RIVAL: ${Math.min(rcar.lap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, yOffset); yOffset += 20;
+                ctx.fillStyle = rcar.color; ctx.fillText(`RIVAL: ${Math.min(rcar.lap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, yOffset); yOffset += isMobile ? 15 : 20;
            });
        }
        ctx.textAlign = "center";
@@ -872,11 +1009,40 @@ export default function App() {
         </div>
 
         {view === 'playing' && (
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-6 px-6 py-3 hud-panel border border-[#f27d26]/30 uppercase tracking-widest text-xs font-mono text-zinc-400 z-10 backdrop-blur-md">
-               <span className="flex items-center gap-2"><b className="text-[#f27d26] bg-[#f27d26]/10 px-1.5 py-0.5 rounded">↑ ↓</b> Acelerar/Frenar</span>
-               <span className="flex items-center gap-2"><b className="text-[#f27d26] bg-[#f27d26]/10 px-1.5 py-0.5 rounded">← →</b> Girar</span>
-               <span className="flex items-center gap-2"><b className="text-[#00f3ff] bg-[#00f3ff]/10 px-1.5 py-0.5 rounded">ESPACIO</b> Reiniciar (Local)</span>
-            </div>
+            <>
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 hidden md:flex gap-6 px-6 py-3 hud-panel border border-[#f27d26]/30 uppercase tracking-widest text-xs font-mono text-zinc-400 z-10 backdrop-blur-md">
+                   <span className="flex items-center gap-2"><b className="text-[#f27d26] bg-[#f27d26]/10 px-1.5 py-0.5 rounded">↑ ↓</b> Acelerar/Frenar</span>
+                   <span className="flex items-center gap-2"><b className="text-[#f27d26] bg-[#f27d26]/10 px-1.5 py-0.5 rounded">← →</b> Girar</span>
+                   <span className="flex items-center gap-2"><b className="text-[#00f3ff] bg-[#00f3ff]/10 px-1.5 py-0.5 rounded">ESPACIO</b> Reiniciar (Local)</span>
+                </div>
+                
+                {/* On-screen Touch Controls (Visible on mobile/tablets usually) */}
+                <div className="md:hidden absolute inset-x-0 bottom-0 pointer-events-none flex justify-between p-8 z-20 touch-none items-end">
+                    
+                    {/* Joystick Virtual Omnidireccional (Apunta y Acelera estilo Asteroids) */}
+                    <div className="pointer-events-auto">
+                        <VirtualJoystick 
+                           onMove={(x, y) => {
+                               touchKeysRef.current.joyActive = true;
+                               touchKeysRef.current.joyX = x;
+                               touchKeysRef.current.joyY = y;
+                           }}
+                           onRelease={() => {
+                               touchKeysRef.current.joyActive = false;
+                           }} 
+                        />
+                    </div>
+                    
+                    <div className="flex gap-4 items-end pointer-events-none">
+                        <button 
+                           className="w-24 h-24 rounded-full bg-zinc-900/50 border-2 border-red-500/50 text-red-500 font-bold text-lg flex justify-center items-center pointer-events-auto active:bg-zinc-800/80 touch-none backdrop-blur-md shadow-[0_0_15px_rgba(220,38,38,0.3)] uppercase tracking-widest"
+                           onPointerDown={(e) => { e.preventDefault(); touchKeysRef.current.ArrowDown = true; }}
+                           onPointerUp={(e) => { e.preventDefault(); touchKeysRef.current.ArrowDown = false; }}
+                           onPointerLeave={() => { touchKeysRef.current.ArrowDown = false; }}
+                        >FRENO</button>
+                    </div>
+                </div>
+            </>
         )}
     </div>
   );
