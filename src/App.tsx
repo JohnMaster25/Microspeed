@@ -54,7 +54,7 @@ const centerPath = [
   {x: 3700, y: 500},  // Hairpin Entry (Braking zone)
   {x: 3200, y: 300},  // Hairpin Apex
   {x: 2700, y: 600},  // Hairpin Exit
-  {x: 2500, y: 1200}, // Tight left
+  {x: 2400, y: 900},  // Tight left (FIXED: moved up to widen the 54-degree inner spike)
   {x: 2000, y: 500},  // Long diagonal straight
   {x: 1200, y: 300},  // Diagonal End
   {x: 500, y: 500},   // Hard left
@@ -63,7 +63,7 @@ const centerPath = [
   {x: 600, y: 3200}   // Carousel exit to straight
 ];
 
-const roundedCenter = createRoundedTrack(centerPath, 350);
+const roundedCenter = createRoundedTrack(centerPath, 500);
 const trackOuter: {x: number, y: number}[] = [];
 const trackInner: {x: number, y: number}[] = [];
 const TRACK_WIDTH = 220;
@@ -111,11 +111,13 @@ for (let i = 0; i < 500; i++) {
 }
 
 export default function App() {
-  const [view, setView] = useState<'lobby' | 'creating' | 'joining' | 'playing'>('lobby');
+  const [view, setView] = useState<'lobby' | 'creating' | 'joining' | 'room_lobby' | 'playing'>('lobby');
+  const [windowSize, setWindowSize] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [roomId, setRoomId] = useState('');
   const [joinId, setJoinId] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isSolo, setIsSolo] = useState(false);
+  const [lobbyPlayers, setLobbyPlayers] = useState<string[]>([]);
   
   const peerRef = useRef<Peer | null>(null);
   const connsRef = useRef<Map<string, DataConnection>>(new Map());
@@ -123,6 +125,9 @@ export default function App() {
   const myIdRef = useRef<string>('');
   const handleDataRef = useRef<((data: any, conn: DataConnection) => void) | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  
+  // Estado de juego persistente para evitar resets al redimensionar
+  const gameStateRef = useRef<any>(null);
 
   // Limpiar error automáticamente tras unos segundos
   useEffect(() => {
@@ -131,6 +136,15 @@ export default function App() {
         return () => clearTimeout(t);
      }
   }, [errorMsg]);
+
+  // Manejar redimensionamiento
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // =========================================================
   // SISTEMA DE RED Y MODOS (LOBBY)
@@ -153,6 +167,8 @@ export default function App() {
     peer.on('open', (assignedId) => {
       setRoomId(assignedId);
       myIdRef.current = assignedId;
+      setLobbyPlayers([assignedId]);
+      setView('room_lobby');
     });
 
     peer.on('connection', (conn) => {
@@ -195,10 +211,24 @@ export default function App() {
 
   const setupConnection = (conn: DataConnection) => {
     conn.on('open', () => {
-      setView(v => (v !== 'playing' ? 'playing' : v));
+      if (isHost.current) {
+         const currentList = [myIdRef.current, ...Array.from(connsRef.current.keys())];
+         setLobbyPlayers(currentList);
+         const msg = { type: 'lobby_sync', players: currentList };
+         Array.from(connsRef.current.values()).forEach((c: any) => {
+             if (c.open) c.send(msg);
+         });
+      }
+      setView(v => (v === 'joining' ? 'room_lobby' : v));
     });
-    conn.on('data', (data) => {
-      if (handleDataRef.current) handleDataRef.current(data, conn);
+    conn.on('data', (data: any) => {
+      if (data.type === 'lobby_sync') {
+          setLobbyPlayers(data.players);
+      } else if (data.type === 'start_race') {
+          setView('playing');
+      } else if (handleDataRef.current) {
+          handleDataRef.current(data, conn);
+      }
     });
     conn.on('close', () => {
       if (!isHost.current) {
@@ -206,6 +236,12 @@ export default function App() {
           setView('lobby');
       } else {
           connsRef.current.delete(conn.peer);
+          const currentList = [myIdRef.current, ...Array.from(connsRef.current.keys())];
+          setLobbyPlayers(currentList);
+          const msg = { type: 'lobby_sync', players: currentList };
+          Array.from(connsRef.current.values()).forEach((c: any) => {
+             if (c.open) c.send(msg);
+          });
       }
     });
     conn.on('error', (err) => {
@@ -224,31 +260,45 @@ export default function App() {
 
     const canvas = canvasRef.current;
     if (!canvas) return;
+    
+    // Ajustar resolución del canvas al tamaño real de la ventana
+    canvas.width = windowSize.width;
+    canvas.height = windowSize.height;
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Config Inicial Coche Local
-    let car = {
-      // Si es solo, centramos en la meta. Si es online, host y guest se posicionan en paralelo.
-      x: isSolo ? 1000 : (isHost.current ? 950 : 1050),
-      y: 2800,
-      prevX: isSolo ? 1000 : (isHost.current ? 950 : 1050),
-      prevY: 2800,
-      width: 20, height: 10,
-      angle: -Math.PI / 2,
-      vx: 0, vy: 0,
-      speed: 0, maxSpeed: 8.5, acceleration: 0.14,
-      friction: 0.988, lateralFriction: 0.975, rotationSpeed: 0.055,
-      color: isSolo ? '#f27d26' : (isHost.current ? '#ef4444' : '#3b82f6') // Solo: Naranja. Host: Rojo. Guest: Azul
-    };
+    // Inicializar o recuperar estado del juego
+    if (!gameStateRef.current) {
+        gameStateRef.current = {
+            car: {
+                x: isSolo ? 1000 : (isHost.current ? 950 : 1050),
+                y: 2800,
+                prevX: isSolo ? 1000 : (isHost.current ? 950 : 1050),
+                prevY: 2800,
+                width: 20, height: 10,
+                angle: -Math.PI / 2,
+                prevAngle: -Math.PI / 2,
+                vx: 0, vy: 0,
+                speed: 0, maxSpeed: 8.5, acceleration: 0.14,
+                friction: 0.988, lateralFriction: 0.975, rotationSpeed: 0.055,
+                color: isSolo ? '#f27d26' : (isHost.current ? '#ef4444' : '#3b82f6'),
+                trail: []
+            },
+            remoteCars: {},
+            localLap: 1,
+            localFinished: false,
+            winState: "",
+            mode: isSolo ? "wait_start" : "racing",
+            startTime: Date.now(),
+            lapTime: 0,
+            uiMessage: isSolo ? "Acelera ↑ para cruzar la meta" : "",
+            checkpoints: { halfTrack: false }
+        };
+    }
 
-    // Config Coche Remoto (Múltiples para Multi)
-    let remoteCars: Record<string, {x: number, y: number, angle: number, width: number, height: number, color: string, lap: number, finished: boolean, speed: number}> = {};
-
-    let thrusterTrail: { x: number, y: number, alpha: number, size: number, angle: number }[] = [];
-
+    const gs = gameStateRef.current;
     const TOTAL_LAPS = 3;
-    let localLap = 1;
 
     // --- Generación del Patrón Futurista (Hexágonos) ---
     const hexSize = 30;
@@ -294,60 +344,59 @@ export default function App() {
     }
     // --------------------------------------------------
 
-    let localFinished = false;
-    let remoteFinished = false;
-    let winState = ""; // "win", "lose", "solo"
-    
     // Función para resetear completamente el estado de carrera
     const resetRace = () => {
-        mode = isSolo ? "wait_start" : "racing";
-        startTime = Date.now();
-        lapTime = 0;
-        uiMessage = isSolo ? "Acelera ↑ para cruzar la meta" : "";
-        checkpoints.halfTrack = false;
-        localLap = 1;
-        localFinished = false;
-        winState = "";
+        gs.mode = isSolo ? "wait_start" : "racing";
+        gs.startTime = Date.now();
+        gs.lapTime = 0;
+        gs.uiMessage = isSolo ? "Acelera ↑ para cruzar la meta" : "";
+        gs.checkpoints.halfTrack = false;
+        gs.localLap = 1;
+        gs.localFinished = false;
+        gs.winState = "";
         
-        Object.values(remoteCars).forEach(c => {
+        Object.values(gs.remoteCars).forEach((c: any) => {
             c.lap = 1;
             c.finished = false;
             c.speed = 0;
+            c.trail = [];
         });
         
-        car.x = isSolo ? 1000 : (isHost.current ? 950 : 1050 + (Math.random() * 50 - 25));
-        car.y = 2800;
-        car.prevX = car.x; car.prevY = car.y;
-        car.vx = 0; car.vy = 0; car.speed = 0;
-        car.angle = -Math.PI / 2;
+        gs.car.x = isSolo ? 1000 : (isHost.current ? 950 : 1050 + (Math.random() * 50 - 25));
+        gs.car.y = 2800;
+        gs.car.prevX = gs.car.x; gs.car.prevY = gs.car.y;
+        gs.car.vx = 0; gs.car.vy = 0; gs.car.speed = 0;
+        gs.car.angle = -Math.PI / 2;
+        gs.car.prevAngle = gs.car.angle;
+        gs.car.trail = [];
     };
 
-    let mode = isSolo ? "wait_start" : "racing";
-    let startTime = Date.now();
-    let lapTime = 0;
-    let uiMessage = isSolo ? "Acelera ↑ para cruzar la meta" : "";
-    let checkpoints = { halfTrack: false };
-    
     // Escuchar actualizaciones del oponente por red
     handleDataRef.current = (data: any, sourceConn: DataConnection) => {
       if (data.type === 'state') {
         const id = data.id;
-        if (!remoteCars[id]) {
+        if (!gs.remoteCars[id]) {
             const colors = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e'];
             let hash = 0; for(let i=0; i<id.length; i++) hash += id.charCodeAt(i);
             const rColor = colors[hash % colors.length];
-            remoteCars[id] = { x: data.x, y: data.y, angle: data.angle, width: 20, height: 10, color: rColor, lap: data.lap, finished: data.finished, speed: data.speed };
+            gs.remoteCars[id] = { x: data.x, y: data.y, angle: data.angle, width: 20, height: 10, color: rColor, lap: data.lap, finished: data.finished, speed: data.speed, trail: [] };
         }
-        remoteCars[id].x = data.x;
-        remoteCars[id].y = data.y;
-        remoteCars[id].angle = data.angle;
-        remoteCars[id].lap = data.lap;
-        remoteCars[id].finished = data.finished;
-        remoteCars[id].speed = data.speed;
+        gs.remoteCars[id].x = data.x;
+        gs.remoteCars[id].y = data.y;
+        gs.remoteCars[id].angle = data.angle;
+        gs.remoteCars[id].lap = data.lap;
+        gs.remoteCars[id].finished = data.finished;
+        gs.remoteCars[id].speed = data.speed;
+        
+        // Actualizar estela del oponente
+        const rCos = Math.cos(data.angle);
+        const rSin = Math.sin(data.angle);
+        gs.remoteCars[id].trail.push({ x: data.x - rCos * 10, y: data.y - rSin * 10 });
+        if (gs.remoteCars[id].trail.length > 50) gs.remoteCars[id].trail.shift();
 
         // Si soy host, reenvío esto al resto de clientes
         if (isHost.current) {
-            Array.from(connsRef.current.values()).forEach(c => {
+            Array.from(connsRef.current.values()).forEach((c: any) => {
                if (c.peer !== sourceConn.peer && c.open) c.send(data);
             });
         }
@@ -356,7 +405,7 @@ export default function App() {
         resetRace();
         // Host forwards restart
         if (isHost.current) {
-            Array.from(connsRef.current.values()).forEach(c => {
+            Array.from(connsRef.current.values()).forEach((c: any) => {
                if (c.peer !== sourceConn.peer && c.open) c.send(data);
             });
         }
@@ -370,11 +419,11 @@ export default function App() {
       if (e.key in keys) { keys[e.key] = true; e.preventDefault(); }
       
       // Reiniciar meta/tiempo local y remoto
-      if (e.key === " " && mode === "finished") {
+      if (e.key === " " && gs.mode === "finished") {
           resetRace();
           if (!isSolo) {
               const rMsg = { type: 'restart' };
-              Array.from(connsRef.current.values()).forEach(c => { if (c.open) c.send(rMsg); });
+              Array.from(connsRef.current.values()).forEach((c: any) => { if (c.open) c.send(rMsg); });
           }
       }
     };
@@ -417,8 +466,10 @@ export default function App() {
 
     const gameLoop = () => {
        // --- Físicas (Sólo afecta a tu coche Local) ---
+       const car = gs.car;
        car.prevX = car.x;
        car.prevY = car.y;
+       car.prevAngle = car.angle;
 
        // Comportamiento estilo propulsor Flotante / Nave pura (Asteroids)
        if (keys.ArrowLeft) car.angle -= car.rotationSpeed;
@@ -434,44 +485,27 @@ export default function App() {
        car.vy *= 0.985; 
 
        car.speed = Math.sqrt(car.vx * car.vx + car.vy * car.vy);
-       
-       // Si estamos acelerando, generamos un trail debajo de la nave (parte trasera)
-       if (keys.ArrowUp) {
-           const cos = Math.cos(car.angle);
-           const sin = Math.sin(car.angle);
-           // Parte trasera central de la central donde se unen los reactores
-           const backX = car.x - cos * (car.width / 4);
-           const backY = car.y - sin * (car.width / 4);
-           
-           // Generamos una sola marca con la orientación exacta (menos partículas)
-           if (Math.random() > 0.4) {
-               thrusterTrail.push({
-                   x: backX,
-                   y: backY,
-                   angle: car.angle,
-                   alpha: 1.0,
-                   size: 5
-               });
-           }
-       }
-       
-       // Update trail decay
-       for (let i = thrusterTrail.length - 1; i >= 0; i--) {
-           thrusterTrail[i].alpha -= 0.05;
-           thrusterTrail[i].size *= 0.90; // Se afila rápidamente
-           if (thrusterTrail[i].alpha <= 0) thrusterTrail.splice(i, 1);
-       }
 
        if (car.speed > car.maxSpeed) {
            car.vx = (car.vx / car.speed) * car.maxSpeed;
            car.vy = (car.vy / car.speed) * car.maxSpeed;
            car.speed = car.maxSpeed;
        }
-
        if (car.speed < 0.05) { car.vx = 0; car.vy = 0; car.speed = 0; }
-
+       
        car.x += car.vx;
        car.y += car.vy;
+
+       // Actualizar estela local
+       if (car.speed > 0.5) {
+           const cos = Math.cos(car.angle);
+           const sin = Math.sin(car.angle);
+           // Añadir punto en la parte trasera de la nave
+           gs.car.trail.push({ x: car.x - cos * 10, y: car.y - sin * 10 });
+           if (gs.car.trail.length > 50) gs.car.trail.shift();
+       } else if (gs.car.trail.length > 0) {
+           gs.car.trail.shift(); // Desaparece si estoy parado
+       }
 
        // --- Colisiones contra el Muro ---
        const corners = getCarCorners(car);
@@ -487,37 +521,49 @@ export default function App() {
          if (collision) break;
        }
        if (collision) {
-         car.vx = -car.vx * 0.6; car.vy = -car.vy * 0.6;
-         car.x += car.vx * 1.5; car.y += car.vy * 1.5;
+         car.x = car.prevX;
+         car.y = car.prevY;
+         car.angle = car.prevAngle;
+         car.vx = -car.vx * 0.6;
+         car.vy = -car.vy * 0.6;
          car.speed = Math.sqrt(car.vx * car.vx + car.vy * car.vy);
        }
 
-       // --- Lap Time Tracker ---
-       // El coche debe cruzar el lado derecho de la pista (x > 3200) en su recorrido para evitar hacer trampa en la línea de meta.
-       if (car.x > 3200) checkpoints.halfTrack = true;
-       // El coche cruza y=2500 hacia ARRIBA dentro del pasillo
-       if (car.prevY >= 2500 && car.y < 2500 && car.x >= 800 && car.x <= 1200) {
-           if (mode === "wait_start" && isSolo) {
-               mode = "racing";
-               startTime = Date.now();
-               uiMessage = "";
-               localLap = 1;
-           } else if (mode === "racing" && checkpoints.halfTrack) {
-               if (localLap < TOTAL_LAPS) {
-                   localLap++;
-                   checkpoints.halfTrack = false;
-                   uiMessage = `¡VUELTA ${localLap}!`;
-                   setTimeout(() => { if (uiMessage === `¡VUELTA ${localLap}!`) uiMessage = ""; }, 2000);
+       // --- Lógica de Carrera ---
+       if (gs.mode === "wait_start") {
+           if (car.speed > 0.5) {
+               gs.mode = "racing";
+               gs.startTime = Date.now();
+               gs.uiMessage = "¡GO!";
+               setTimeout(() => { if (gs.uiMessage === "¡GO!") gs.uiMessage = ""; }, 1000);
+           }
+       }
+
+       if (gs.mode === "racing") {
+           if (!gs.checkpoints.halfTrack && car.x > 3200) {
+               gs.checkpoints.halfTrack = true;
+           }
+
+           if (car.prevY >= 2500 && car.y < 2500 && car.x >= 800 && car.x <= 1200) {
+               if (!gs.checkpoints.halfTrack) {
+                   gs.uiMessage = "¡FALTA MEDIA VUELTA!";
+                   setTimeout(() => { if (gs.uiMessage === "¡FALTA MEDIA VUELTA!") gs.uiMessage = ""; }, 2000);
                } else {
-                   mode = "finished";
-                   lapTime = Date.now() - startTime;
-                   localFinished = true;
-                   
-                   if (isSolo) winState = "solo";
-                   else {
-                       // Chequear si soy el primero en acabar de todos (solo comparo si algún remoto está finished true)
-                       const someFinished = Object.values(remoteCars).some(c => c.finished);
-                       winState = someFinished ? "lose" : "win";
+                   if (gs.localLap < TOTAL_LAPS) {
+                       gs.localLap++;
+                       gs.checkpoints.halfTrack = false;
+                       gs.uiMessage = `¡VUELTA ${gs.localLap}!`;
+                       setTimeout(() => { if (gs.uiMessage === `¡VUELTA ${gs.localLap}!`) gs.uiMessage = ""; }, 2000);
+                   } else {
+                       gs.mode = "finished";
+                       gs.lapTime = Date.now() - gs.startTime;
+                       gs.localFinished = true;
+                       
+                       if (isSolo) gs.winState = "solo";
+                       else {
+                           const someFinished = Object.values(gs.remoteCars).some((c: any) => c.finished);
+                           gs.winState = someFinished ? "lose" : "win";
+                       }
                    }
                }
            }
@@ -525,234 +571,157 @@ export default function App() {
 
        // --- Broadcast de Red Mínimo 30FPS ---
        const now = Date.now();
-       if (!isSolo && now - lastNetworkSync > 32) { // aprox 30 veces por segundo (~33ms)
+       if (!isSolo && now - lastNetworkSync > 32) {
            lastNetworkSync = now;
            const sMsg = { 
                type: 'state', id: myIdRef.current, x: car.x, y: car.y, angle: car.angle,
-               lap: localLap, finished: localFinished, speed: car.speed
+               lap: gs.localLap, finished: gs.localFinished, speed: car.speed
            };
-           Array.from(connsRef.current.values()).forEach(c => {
+           Array.from(connsRef.current.values()).forEach((c: any) => {
                if (c.open) c.send(sMsg);
            });
        }
 
        // --- RENDERIZADO EN CANVAS ---
-       // Fondo oscuro estático (base para el color de fuera de la pista)
        ctx.fillStyle = "#1e1e24"; ctx.fillRect(0, 0, canvas.width, canvas.height); 
        
        ctx.save();
-       
-       // Cámara dinámica focalizada en el coche local
        const camX = car.x - canvas.width / 2;
        const camY = car.y - canvas.height / 2;
        ctx.translate(-camX, -camY);
 
        // Dibujar Decoraciones
-       const screenPad = 200; // Solo dibujar lo que está medianamente cerca de la pantalla para optimizar
+       const screenPad = 200;
        for (const dec of mapDecorations) {
            if (dec.x < camX - screenPad || dec.x > camX + canvas.width + screenPad ||
                dec.y < camY - screenPad || dec.y > camY + canvas.height + screenPad) {
                continue;
            }
-
            ctx.save();
-           ctx.translate(dec.x, dec.y);
-           ctx.rotate(dec.angle);
-           ctx.strokeStyle = dec.color;
-           ctx.lineWidth = dec.thickness;
-           ctx.beginPath();
-           
-           if (dec.type === 'circle') {
-               ctx.arc(0, 0, dec.size / 2, 0, Math.PI * 2);
-           } else if (dec.type === 'ring') {
-               ctx.arc(0, 0, dec.size / 2, 0, Math.PI * 2);
-               ctx.stroke();
-               ctx.beginPath();
-               ctx.arc(0, 0, dec.size / 3, 0, Math.PI * 2);
-           } else if (dec.type === 'square') {
-               ctx.rect(-dec.size / 2, -dec.size / 2, dec.size, dec.size);
-           } else if (dec.type === 'cross') {
-               ctx.moveTo(-dec.size / 2, 0); ctx.lineTo(dec.size / 2, 0);
-               ctx.moveTo(0, -dec.size / 2); ctx.lineTo(0, dec.size / 2);
-           } else if (dec.type === 'triangle') {
-               ctx.moveTo(0, -dec.size / 2);
-               ctx.lineTo(dec.size / 2, dec.size / 2);
-               ctx.lineTo(-dec.size / 2, dec.size / 2);
-               ctx.closePath();
-           }
-           
-           ctx.stroke();
-           ctx.restore();
+           ctx.translate(dec.x, dec.y); ctx.rotate(dec.angle); ctx.strokeStyle = dec.color; ctx.lineWidth = dec.thickness; ctx.beginPath();
+           if (dec.type === 'circle') ctx.arc(0, 0, dec.size / 2, 0, Math.PI * 2);
+           else if (dec.type === 'ring') { ctx.arc(0, 0, dec.size / 2, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 0, dec.size / 3, 0, Math.PI * 2); }
+           else if (dec.type === 'square') ctx.rect(-dec.size / 2, -dec.size / 2, dec.size, dec.size);
+           else if (dec.type === 'cross') { ctx.moveTo(-dec.size / 2, 0); ctx.lineTo(dec.size / 2, 0); ctx.moveTo(0, -dec.size / 2); ctx.lineTo(0, dec.size / 2); }
+           else if (dec.type === 'triangle') { ctx.moveTo(0, -dec.size / 2); ctx.lineTo(dec.size / 2, dec.size / 2); ctx.lineTo(-dec.size / 2, dec.size / 2); ctx.closePath(); }
+           ctx.stroke(); ctx.restore();
        }
 
-       // Pista: usamos fill "evenodd" con dos contornos (outer e inner) para no sobreescribir el interior
+       // Pista
        ctx.beginPath(); 
-       ctx.moveTo(trackOuter[0].x, trackOuter[0].y);
-       for(let i=1; i<trackOuter.length; i++) ctx.lineTo(trackOuter[i].x, trackOuter[i].y);
-       ctx.closePath();
-       
-       ctx.moveTo(trackInner[0].x, trackInner[0].y);
-       for(let i=1; i<trackInner.length; i++) ctx.lineTo(trackInner[i].x, trackInner[i].y);
-       ctx.closePath();
+       ctx.moveTo(trackOuter[0].x, trackOuter[0].y); for(let i=1; i<trackOuter.length; i++) ctx.lineTo(trackOuter[i].x, trackOuter[i].y); ctx.closePath();
+       ctx.moveTo(trackInner[0].x, trackInner[0].y); for(let i=1; i<trackInner.length; i++) ctx.lineTo(trackInner[i].x, trackInner[i].y); ctx.closePath();
+       ctx.fillStyle = trackPattern; ctx.fill("evenodd");
 
-       ctx.fillStyle = trackPattern; 
-       ctx.fill("evenodd");
-
-       // Dibujar Bordes Geométricos
+       // Bordes
        ctx.strokeStyle = "#44444c"; ctx.lineWidth = 4; ctx.lineJoin = "round";
-       
-       ctx.beginPath();
-       ctx.moveTo(trackOuter[0].x, trackOuter[0].y);
-       for(let i=1; i<trackOuter.length; i++) ctx.lineTo(trackOuter[i].x, trackOuter[i].y);
-       ctx.closePath(); ctx.stroke();
-       
-       ctx.beginPath();
-       ctx.moveTo(trackInner[0].x, trackInner[0].y);
-       for(let i=1; i<trackInner.length; i++) ctx.lineTo(trackInner[i].x, trackInner[i].y);
-       ctx.closePath(); ctx.stroke();
+       ctx.beginPath(); ctx.moveTo(trackOuter[0].x, trackOuter[0].y); for(let i=1; i<trackOuter.length; i++) ctx.lineTo(trackOuter[i].x, trackOuter[i].y); ctx.closePath(); ctx.stroke();
+       ctx.beginPath(); ctx.moveTo(trackInner[0].x, trackInner[0].y); for(let i=1; i<trackInner.length; i++) ctx.lineTo(trackInner[i].x, trackInner[i].y); ctx.closePath(); ctx.stroke();
+       ctx.strokeStyle = "#00ff00"; ctx.lineWidth = 12; ctx.beginPath(); ctx.moveTo(finishLine.x1, finishLine.y1); ctx.lineTo(finishLine.x2, finishLine.y2); ctx.stroke();
 
-       // Meta y Start point
-       ctx.strokeStyle = "#00ff00"; ctx.lineWidth = 12;
-       ctx.beginPath(); ctx.moveTo(finishLine.x1, finishLine.y1); ctx.lineTo(finishLine.x2, finishLine.y2); ctx.stroke();
-
-       // Trail de Propulsor Triangular Geométrico
-       for (let i = 0; i < thrusterTrail.length; i++) {
-           const mark = thrusterTrail[i];
-           ctx.fillStyle = `rgba(0, 200, 255, ${mark.alpha})`; // Cyan brillante
-           ctx.shadowBlur = mark.alpha * 15;
-           ctx.shadowColor = "rgba(0, 200, 255, 1)";
-           
+       // Dibujar Estelas (Trails)
+       const drawTrail = (c: any) => {
+           if (c.trail.length < 2) return;
            ctx.save();
-           ctx.translate(mark.x, mark.y);
-           ctx.rotate(mark.angle);
-           
-           // Dibujar un triángulo estilizado hacia atrás
-           ctx.beginPath();
-           ctx.moveTo(-mark.size * 3, 0); // Largo pico hacia atrás
-           ctx.lineTo(0, mark.size);      // Extremo superior de la base
-           ctx.lineTo(0, -mark.size);     // Extremo inferior de la base
-           ctx.closePath();
-           ctx.fill();
-           
-           ctx.restore();
-       }
-       ctx.shadowBlur = 0;
-
-       // Helper genérico para coches/naves
-       const drawCar = (c: any) => {
-           ctx.save();
-           ctx.translate(c.x, c.y);
-           ctx.rotate(c.angle);
-           
-           // Cuerpo principal (Nave angular)
-           ctx.beginPath();
-           ctx.moveTo(c.width / 2 + 4, 0); // Pico delantero
-           ctx.lineTo(-c.width / 2, c.height / 2 + 2); // Ala derecha
-           ctx.lineTo(-c.width / 4, 0); // Cola central
-           ctx.lineTo(-c.width / 2, -c.height / 2 - 2); // Ala izquierda
-           ctx.closePath();
-           
-           ctx.fillStyle = '#1c1c20'; // Chasis oscuro
-           ctx.fill();
-           
-           // Borde brillante con el color del equipo
-           ctx.lineWidth = 1.5;
-           ctx.strokeStyle = c.color;
-           ctx.shadowBlur = 10;
+           ctx.globalAlpha = 0.6;
+           ctx.shadowBlur = 12;
            ctx.shadowColor = c.color;
-           ctx.stroke();
+           ctx.fillStyle = c.color;
 
-           // Cabina central translúcida
            ctx.beginPath();
-           ctx.moveTo(c.width / 4, 0);
-           ctx.lineTo(-c.width / 6, c.height / 4);
-           ctx.lineTo(-c.width / 6 + 2, 0);
-           ctx.lineTo(-c.width / 6, -c.height / 4);
-           ctx.closePath();
-           ctx.fillStyle = 'rgba(0, 255, 255, 0.4)';
-           ctx.shadowBlur = 0;
-           ctx.fill();
-
-           // Reactores de propulsión traseros (Vector)
-           if (c.speed > 0.1) {
-               ctx.strokeStyle = c.color;
-               ctx.shadowBlur = 5; // Reducido para evitar mancha
-               ctx.shadowColor = c.color;
-               ctx.lineWidth = 2;
-               ctx.beginPath();
-               ctx.moveTo(-c.width / 4, 0); 
-               ctx.lineTo(-c.width / 4 - (c.speed * 1.5), 0);
-               ctx.stroke();
-               ctx.shadowBlur = 0; // Reset estricto
+           
+           const leftSide = [];
+           const rightSide = [];
+           
+           for (let i = 0; i < c.trail.length; i++) {
+               const p = c.trail[i];
+               const progress = i / c.trail.length;
+               const width = progress * 7; 
+               
+               let dx = 0, dy = 0;
+               if (i === 0) {
+                   dx = c.trail[1].x - c.trail[0].x;
+                   dy = c.trail[1].y - c.trail[0].y;
+               } else if (i === c.trail.length - 1) {
+                   dx = c.trail[i].x - c.trail[i-1].x;
+                   dy = c.trail[i].y - c.trail[i-1].y;
+               } else {
+                   dx = c.trail[i+1].x - c.trail[i-1].x;
+                   dy = c.trail[i+1].y - c.trail[i-1].y;
+               }
+               
+               const len = Math.sqrt(dx*dx + dy*dy) || 1;
+               const nx = -dy / len;
+               const ny = dx / len;
+               
+               leftSide.push({ x: p.x + nx * width, y: p.y + ny * width });
+               rightSide.unshift({ x: p.x - nx * width, y: p.y - ny * width });
            }
-
+           
+           ctx.moveTo(leftSide[0].x, leftSide[0].y);
+           for (let i = 1; i < leftSide.length; i++) {
+               ctx.lineTo(leftSide[i].x, leftSide[i].y);
+           }
+           for (let i = 0; i < rightSide.length; i++) {
+               ctx.lineTo(rightSide[i].x, rightSide[i].y);
+           }
+           
+           ctx.closePath();
+           ctx.fill();
            ctx.restore();
        }
 
-       // Pintamos primero a los rivales (por debajo en colisión visual), luego a nosotros mismos
-       if (!isSolo) {
-           Object.values(remoteCars).forEach(c => drawCar(c));
+       if (!isSolo) Object.values(gs.remoteCars).forEach(c => drawTrail(c));
+       drawTrail(car);
+
+       // Helper genérico para coches
+       const drawCar = (c: any) => {
+           ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.angle);
+           ctx.beginPath(); ctx.moveTo(c.width / 2 + 4, 0); ctx.lineTo(-c.width / 2, c.height / 2 + 2); ctx.lineTo(-c.width / 4, 0); ctx.lineTo(-c.width / 2, -c.height / 2 - 2); ctx.closePath();
+           ctx.fillStyle = '#1c1c20'; ctx.fill();
+           ctx.lineWidth = 1.5; ctx.strokeStyle = c.color; ctx.shadowBlur = 10; ctx.shadowColor = c.color; ctx.stroke();
+           ctx.beginPath(); ctx.moveTo(c.width / 4, 0); ctx.lineTo(-c.width / 6, c.height / 4); ctx.lineTo(-c.width / 6 + 2, 0); ctx.lineTo(-c.width / 6, -c.height / 4); ctx.closePath();
+           ctx.fillStyle = 'rgba(0, 255, 255, 0.4)'; ctx.shadowBlur = 0; ctx.fill();
+           if (c.speed > 0.1) {
+           }
+           ctx.restore();
        }
+
+       if (!isSolo) Object.values(gs.remoteCars).forEach(c => drawCar(c));
        drawCar(car);
+       ctx.restore();
 
-       ctx.restore(); // Finaliza el área afectada por la cámara
-
-       // Controles UI de Cronómetro (Estáticos en pantalla)
-       ctx.fillStyle = "#e0e0e0"; ctx.font = "bold 24px monospace";
-       ctx.textAlign = "left";
-       ctx.shadowColor = "#000"; ctx.shadowBlur = 2; ctx.shadowOffsetX = 1; ctx.shadowOffsetY = 1;
-       const elapsed = mode === "wait_start" ? 0 : (mode === "finished" ? lapTime : Date.now() - startTime);
+       // UI
+       ctx.fillStyle = "#e0e0e0"; ctx.font = "bold 24px monospace"; ctx.textAlign = "left";
+       const elapsed = gs.mode === "wait_start" ? 0 : (gs.mode === "finished" ? gs.lapTime : Date.now() - gs.startTime);
        const ms = Math.floor((elapsed % 1000) / 10).toString().padStart(2, '0');
        const sec = Math.floor((elapsed / 1000) % 60).toString().padStart(2, '0');
        const min = Math.floor(elapsed / 60000).toString().padStart(2, '0');
        ctx.fillText(`${min}:${sec}.${ms}`, 20, 35);
        
-       // Draw Laps
-       ctx.textAlign = "right";
-       ctx.fillStyle = car.color;
-       ctx.fillText(`VUELTA: ${Math.min(localLap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, 35);
-       
+       ctx.textAlign = "right"; ctx.fillStyle = car.color;
+       ctx.fillText(`VUELTA: ${Math.min(gs.localLap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, 35);
        if (!isSolo) {
-           ctx.fillStyle = "#888888"; 
-           ctx.font = "bold 16px monospace";
-           let yOffset = 60;
-           Object.entries(remoteCars).forEach(([id, rcar]) => {
-                ctx.fillStyle = rcar.color;
-                ctx.fillText(`RIVAL: ${Math.min(rcar.lap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, yOffset);
-                yOffset += 20;
+           ctx.font = "bold 16px monospace"; let yOffset = 60;
+           Object.entries(gs.remoteCars).forEach(([id, rcar]: [string, any]) => {
+                ctx.fillStyle = rcar.color; ctx.fillText(`RIVAL: ${Math.min(rcar.lap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, yOffset); yOffset += 20;
            });
        }
-       ctx.textAlign = "left";
-
-       if (mode === "finished") {
-           if (winState === "win") uiMessage = "¡HAS GANADO!";
-           else if (winState === "lose") uiMessage = "¡HAS PERDIDO!";
-           else uiMessage = "¡TIEMPO FINAL!";
+       ctx.textAlign = "center";
+       if (gs.mode === "finished") {
+           if (gs.winState === "win") gs.uiMessage = "¡HAS GANADO!";
+           else if (gs.winState === "lose") gs.uiMessage = "¡HAS PERDIDO!";
+           else gs.uiMessage = "¡TIEMPO FINAL!";
        }
-       
-       if (uiMessage) {
-           ctx.font = "900 48px sans-serif"; ctx.textAlign = "center";
-           if (uiMessage === "¡HAS PERDIDO!") {
-               ctx.fillStyle = "#ef4444"; ctx.shadowColor = "rgba(239,68,68,0.5)";
-           } else if (uiMessage === "¡HAS GANADO!") {
-               ctx.fillStyle = "#eab308"; ctx.shadowColor = "rgba(234,179,8,0.5)";
-           } else {
-               ctx.fillStyle = "#00ff00"; ctx.shadowColor = "rgba(0,255,0,0.5)";
+       if (gs.uiMessage) {
+           ctx.font = "900 48px sans-serif"; ctx.fillStyle = (gs.uiMessage.includes("GANADO") || gs.uiMessage.includes("GO")) ? "#00ff00" : (gs.uiMessage.includes("PERDIDO") ? "#ef4444" : "#ffffff");
+           ctx.shadowBlur = 20; ctx.shadowColor = ctx.fillStyle;
+           ctx.fillText(gs.uiMessage.toUpperCase(), canvas.width / 2, canvas.height / 2);
+           if (gs.mode === "finished") {
+               ctx.font = "bold 24px sans-serif"; ctx.fillStyle = "#e0e0e0"; ctx.fillText(`Tiempo total: ${(gs.lapTime / 1000).toFixed(2)}s`, canvas.width / 2, canvas.height / 2 + 50);
+               ctx.font = "16px sans-serif"; ctx.fillText("Presiona ESPACIO para jugar de nuevo", canvas.width / 2, canvas.height / 2 + 90);
            }
-           ctx.shadowBlur = 20;
-           ctx.fillText(uiMessage.toUpperCase(), canvas.width / 2, canvas.height / 2);
-           
-           if (mode === "finished") {
-               ctx.font = "bold 24px sans-serif";
-               ctx.fillStyle = "#e0e0e0"; ctx.shadowBlur = 4; ctx.shadowColor = "#000";
-               ctx.fillText(`Tiempo total: ${(lapTime / 1000).toFixed(2)}s`, canvas.width / 2, canvas.height / 2 + 50);
-               ctx.font = "16px sans-serif";
-               ctx.fillText("Presiona ESPACIO para jugar de nuevo", canvas.width / 2, canvas.height / 2 + 90);
-           }
-
-           ctx.textAlign = "left"; ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
        }
-
        animationFrameId = requestAnimationFrame(gameLoop);
     };
 
@@ -764,63 +733,137 @@ export default function App() {
       cancelAnimationFrame(animationFrameId);
       handleDataRef.current = null;
     };
-  }, [view, isSolo]);
+  }, [view, isSolo, windowSize]);
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen overflow-hidden m-0 p-0" style={{ backgroundColor: '#0f0f12', fontFamily: "'Helvetica Neue', Arial, sans-serif" }}>
+    <div className="flex flex-col items-center justify-center w-screen h-screen overflow-hidden m-0 p-0 font-sans" style={{ backgroundColor: '#09090b' }}>
         
-        <h1 className="text-3xl font-bold mb-4 tracking-tight drop-shadow-md" style={{ color: '#e0e0e0' }}>Microspeed Online</h1>
+        {view !== 'playing' && (
+           <div className="absolute top-12 flex flex-col items-center z-10 pointer-events-none">
+               <h1 className="text-4xl md:text-6xl font-black mb-1 tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-[#00f3ff] to-[#f27d26] uppercase drop-shadow-lg" style={{ fontFamily: 'Space Grotesk' }}>
+                   Microspeed
+               </h1>
+               <div className="text-[#00f3ff] tracking-[0.5em] font-bold text-sm md:text-lg uppercase glow-text-cyan">Online</div>
+           </div>
+        )}
         
         {/* Gestor simple de Alertas/Errores sin dañar IFrame */}
         {errorMsg && (
-            <div className="absolute top-10 px-6 py-3 rounded bg-red-600 font-bold text-white shadow-[0_0_20px_rgba(220,38,38,0.5)] max-w-lg text-center pointer-events-none transition-all" style={{ zIndex: 50 }}>
-                {errorMsg}
+            <div className="absolute top-32 px-6 py-3 hud-panel border border-red-500 font-mono font-bold text-red-400 shadow-[0_0_20px_rgba(220,38,38,0.5)] max-w-lg text-center pointer-events-none transition-all z-50">
+                [ ERROR ]: {errorMsg}
             </div>
         )}
 
-        <div className="relative rounded flex flex-col items-center bg-[#1a1a1e]" style={{ width: 1024, height: 768, boxShadow: '0 0 50px rgba(0,0,0,0.5), 0 0 2px #f27d26', borderRadius: '4px', overflow: 'hidden' }}>
-            
+        <div className="relative w-full h-full flex flex-col items-center justify-center bg-grid-pattern overflow-hidden">
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-transparent via-[#09090b]/80 to-[#09090b] pointer-events-none"></div>
+
             {view === 'playing' ? (
-                <canvas ref={canvasRef} width={1024} height={768} className="block" style={{ backgroundColor: '#1a1a1e' }} />
+                <canvas ref={canvasRef} width={windowSize.width} height={windowSize.height} className="block w-full h-full relative z-0" style={{ backgroundColor: '#1a1a1e' }} />
             ) : (
-                <div className="flex flex-col items-center justify-center w-full h-full text-[#e0e0e0]">
-                    <h2 className="text-3xl font-bold mb-10 tracking-widest text-[#f27d26]">SELECCIONA MODO</h2>
-                    
+                <div className="flex flex-col items-center justify-center w-full h-full text-zinc-100 z-10">
                     {view === 'lobby' && (
-                        <div className="flex flex-col gap-5">
-                            <button onClick={startSolo} className="w-72 px-6 py-4 bg-[#f27d26] hover:bg-orange-600 text-white text-lg font-bold rounded shadow-lg transition transform hover:scale-105">
-                                Contrarreloj (1 Jugador)
+                        <div className="flex flex-col gap-5 mt-10">
+                            <button onClick={startSolo} className="btn-sci-fi w-[320px] px-6 py-5 bg-[#f27d26] text-white text-lg font-bold shadow-lg flex justify-between items-center group relative overflow-hidden">
+                                <span className="relative z-10 tracking-widest uppercase">Contrarreloj</span>
+                                <span className="relative z-10 font-mono text-sm text-black bg-white/80 px-2 py-1 rounded-sm">1P</span>
+                                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]"></div>
                             </button>
-                            <button onClick={createRoom} className="w-72 px-6 py-4 bg-[#44444c] hover:bg-gray-600 text-white text-lg font-bold rounded shadow-lg transition transform hover:scale-105">
-                                Crear Sala (7 Jugadores)
+                            <button onClick={createRoom} className="btn-sci-fi w-[320px] px-6 py-5 bg-[#00f3ff] text-black text-lg font-bold shadow-[0_0_15px_rgba(0,243,255,0.4)] flex justify-between items-center group relative overflow-hidden">
+                                <span className="relative z-10 tracking-widest uppercase">Crear Sala</span>
+                                <span className="relative z-10 font-mono text-sm text-black bg-white/80 px-2 py-1 rounded-sm">7P</span>
+                                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-black/20 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]"></div>
                             </button>
-                            <button onClick={() => setView('joining')} className="w-72 px-6 py-4 bg-transparent border-2 border-[#44444c] hover:bg-[#44444c] text-white text-lg font-bold rounded shadow-lg transition transform hover:scale-105">
-                                Unirse a Sala (7 Jugadores)
+                            <button onClick={() => setView('joining')} className="btn-sci-fi w-[320px] px-6 py-5 bg-transparent border-2 border-[#00f3ff] text-[#00f3ff] glow-border-cyan text-lg font-bold flex justify-between items-center hover:bg-[#00f3ff]/10">
+                                <span className="relative z-10 tracking-widest uppercase">Unirse a Sala</span>
+                                <span className="relative z-10 font-mono text-sm text-[#00f3ff] bg-[#00f3ff]/20 px-2 py-1 rounded-sm">7P</span>
                             </button>
                         </div>
                     )}
 
                     {view === 'creating' && (
-                        <div className="text-center flex flex-col items-center">
-                            <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-[#f27d26] mb-6"></div>
-                            <p className="text-xl text-gray-400">Esperando a otro jugador...</p>
-                            <p className="text-5xl font-black text-[#f27d26] mt-4 tracking-widest">{roomId || '...'}</p>
-                            <button onClick={() => setView('lobby')} className="mt-12 px-6 py-2 border-2 border-[#44444c] text-sm font-bold rounded hover:bg-[#44444c] transition">Cancerlar Servidor</button>
+                        <div className="text-center flex flex-col items-center hud-panel p-10 border border-[#f27d26]/50 shadow-[0_0_30px_rgba(242,125,38,0.2)]">
+                            <div className="animate-spin rounded-none h-12 w-12 border-2 border-transparent border-t-[#f27d26] border-r-[#f27d26] mb-6"></div>
+                            <p className="text-xl font-mono text-zinc-400 uppercase tracking-widest">Iniciando Servidor...</p>
+                            <p className="text-2xl font-bold font-mono text-[#f27d26] mt-4 tracking-widest glow-text-orange">POR FAVOR ESPERA</p>
+                        </div>
+                    )}
+
+                    {view === 'room_lobby' && (
+                        <div className="flex flex-col items-center w-full max-w-lg hud-panel p-8 border border-[#00f3ff]/40 shadow-[0_0_40px_rgba(0,243,255,0.15)] mt-12">
+                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#00f3ff] via-[#f27d26] to-[#00f3ff]"></div>
+                            
+                            <h2 className="text-sm font-mono mb-2 text-zinc-400 tracking-widest uppercase">ID de Enlace de Red</h2>
+                            <h2 className="text-4xl font-black mb-8 tracking-widest text-[#00f3ff] glow-text-cyan font-mono">
+                                {isHost.current ? roomId : joinId}
+                            </h2>
+                            
+                            <div className="w-full mb-6">
+                                <div className="flex justify-between items-end mb-2 border-b border-zinc-700 pb-2">
+                                    <h3 className="text-sm tracking-widest font-bold text-zinc-300 uppercase">Pilotos en Red</h3>
+                                    <span className="font-mono text-[#00f3ff] bg-[#00f3ff]/10 px-2 py-0.5 rounded text-sm">{lobbyPlayers.length} / 7</span>
+                                </div>
+                                <ul className="flex flex-col gap-2">
+                                    {lobbyPlayers.map((p, i) => (
+                                        <li key={i} className="flex justify-between items-center bg-zinc-900/80 border border-zinc-800 p-3 font-mono text-zinc-300 transition-colors hover:border-[#00f3ff]/50">
+                                            <span className="flex items-center gap-3">
+                                                <span className="w-2 h-2 rounded-full bg-[#00f3ff] glow-text-cyan animate-pulse"></span>
+                                                {p === myIdRef.current ? (isHost.current ? p + ' [HOST]' : p + ' [YOU]') : p}
+                                            </span>
+                                            <span className="text-xs text-[#00f3ff]/80 font-bold uppercase tracking-wider backdrop-blur-sm bg-[#00f3ff]/10 px-2 py-1">En Línea</span>
+                                        </li>
+                                    ))}
+                                    {[...Array(7 - lobbyPlayers.length)].map((_, i) => (
+                                        <li key={'empty'+i} className="flex justify-between items-center bg-transparent border border-dashed border-zinc-800 p-3 text-zinc-600 font-mono italic">
+                                            <span>&lt; ranura_vacía &gt;</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                            
+                            <div className="flex gap-4 w-full mt-4">
+                                <button onClick={() => {
+                                    peerRef.current?.destroy();
+                                    setView('lobby');
+                                }} className="btn-sci-fi flex-1 px-4 py-4 bg-transparent border-2 border-red-500/50 hover:bg-red-500/10 text-red-500 font-bold uppercase tracking-widest text-sm text-center">
+                                    {isHost.current ? 'Abortar' : 'Desconectar'}
+                                </button>
+                                {isHost.current ? (
+                                    <button 
+                                        onClick={() => {
+                                            const startMsg = { type: 'start_race' };
+                                            Array.from(connsRef.current.values()).forEach((c: any) => { if (c.open) c.send(startMsg); });
+                                            setView('playing');
+                                        }} 
+                                        disabled={lobbyPlayers.length < 1}
+                                        className={`btn-sci-fi flex-1 px-4 py-4 bg-[#f27d26] hover:bg-orange-500 text-white font-bold uppercase tracking-widest text-sm text-center shadow-[0_0_15px_rgba(242,125,38,0.5)] ${lobbyPlayers.length < 1 ? 'opacity-30 cursor-not-allowed saturate-0' : ''}`}>
+                                        Iniciar Secuencia
+                                    </button>
+                                ) : (
+                                    <div className="btn-sci-fi flex-1 px-4 py-4 bg-zinc-800 text-zinc-500 text-center font-bold uppercase tracking-widest text-sm flex items-center justify-center gap-2">
+                                        <div className="w-2 h-2 rounded-full bg-zinc-500 animate-ping"></div>
+                                        Esperando Host
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
 
                     {view === 'joining' && (
-                        <div className="flex flex-col gap-6 items-center">
-                            <input 
-                                type="text" 
-                                value={joinId} 
-                                onChange={e => setJoinId(e.target.value.toUpperCase())} 
-                                placeholder="ID DE SALA (CAR-XXX)" 
-                                className="w-72 text-center px-4 py-4 text-2xl bg-[#2c2c34] text-[#e0e0e0] font-bold rounded border-2 border-[#44444c] focus:border-[#f27d26] outline-none uppercase transition" 
-                            />
-                            <div className="flex gap-4 w-full mt-2">
-                                <button onClick={() => setView('lobby')} className="flex-1 px-4 py-3 bg-transparent border-2 border-[#44444c] hover:bg-[#44444c] text-[#e0e0e0] font-bold rounded transition">Atrás</button>
-                                <button onClick={joinRoom} className="flex-1 px-4 py-3 bg-[#f27d26] hover:bg-orange-600 text-white font-bold rounded shadow-lg transition">Conectar</button>
+                        <div className="flex flex-col items-center w-full max-w-md hud-panel p-10 border border-[#00f3ff]/50 shadow-[0_0_30px_rgba(0,243,255,0.15)] mt-12">
+                            <h2 className="text-2xl font-bold mb-8 tracking-widest text-zinc-100 uppercase">Conexión Remota</h2>
+                            <div className="w-full relative">
+                                <span className="absolute -top-3 left-3 bg-[#0f0f12] px-2 text-xs font-mono text-[#00f3ff] tracking-widest">ID DE ENLACE</span>
+                                <input 
+                                    type="text" 
+                                    value={joinId} 
+                                    onChange={e => setJoinId(e.target.value.toUpperCase())} 
+                                    placeholder="CAR-XXX" 
+                                    className="w-full text-center px-4 py-5 text-3xl bg-black/40 text-[#00f3ff] font-mono font-bold border-2 border-zinc-700 outline-none uppercase transition focus:border-[#00f3ff] focus:shadow-[0_0_15px_rgba(0,243,255,0.3)] placeholder-zinc-700" 
+                                />
+                            </div>
+                            <div className="flex gap-4 w-full mt-8">
+                                <button onClick={() => setView('lobby')} className="btn-sci-fi flex-1 px-4 py-4 bg-transparent border-2 border-zinc-500 hover:border-zinc-300 hover:text-white text-zinc-400 font-bold uppercase tracking-widest text-sm">Cancelar</button>
+                                <button onClick={joinRoom} className="btn-sci-fi flex-1 px-4 py-4 bg-[#00f3ff] text-black font-bold shadow-[0_0_15px_rgba(0,243,255,0.4)] uppercase tracking-widest text-sm">Conectar</button>
                             </div>
                         </div>
                     )}
@@ -829,11 +872,11 @@ export default function App() {
         </div>
 
         {view === 'playing' && (
-            <p className="mt-5 flex space-x-6 uppercase tracking-[1px] text-[12px]" style={{ color: '#666' }}>
-               <span><b className="px-1" style={{ color: '#f27d26' }}>↑ / ↓</b> Acelerar/Frenar</span>
-               <span><b className="px-1" style={{ color: '#f27d26' }}>← / →</b> Girar</span>
-               <span><b className="px-1" style={{ color: '#f27d26' }}>Space</b> Reiniciar Sprint (Local)</span>
-            </p>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex gap-6 px-6 py-3 hud-panel border border-[#f27d26]/30 uppercase tracking-widest text-xs font-mono text-zinc-400 z-10 backdrop-blur-md">
+               <span className="flex items-center gap-2"><b className="text-[#f27d26] bg-[#f27d26]/10 px-1.5 py-0.5 rounded">↑ ↓</b> Acelerar/Frenar</span>
+               <span className="flex items-center gap-2"><b className="text-[#f27d26] bg-[#f27d26]/10 px-1.5 py-0.5 rounded">← →</b> Girar</span>
+               <span className="flex items-center gap-2"><b className="text-[#00f3ff] bg-[#00f3ff]/10 px-1.5 py-0.5 rounded">ESPACIO</b> Reiniciar (Local)</span>
+            </div>
         )}
     </div>
   );

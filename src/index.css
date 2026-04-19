@@ -1,1 +1,43 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&family=Space+Grotesk:wght@400;500;700;900&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+    background-color: #09090b;
+    color: #f4f4f5;
+}
+
+.bg-grid-pattern {
+    background-image: 
+        linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size: 50px 50px;
+    background-position: center auto;
+}
+
+.glow-text-orange {
+    text-shadow: 0 0 10px rgba(242, 125, 38, 0.8), 0 0 20px rgba(242, 125, 38, 0.4);
+}
+
+.glow-text-cyan {
+    text-shadow: 0 0 10px rgba(0, 243, 255, 0.8), 0 0 20px rgba(0, 243, 255, 0.4);
+}
+
+.btn-sci-fi {
+    clip-path: polygon(15px 0, 100% 0, 100% calc(100% - 15px), calc(100% - 15px) 100%, 0 100%, 0 15px);
+    transition: all 0.15s ease-out;
+}
+.btn-sci-fi:hover {
+    transform: scale(1.02);
+    filter: brightness(1.2);
+}
+
+.hud-panel {
+    clip-path: polygon(20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%, 0 20px);
+    background: linear-gradient(135deg, rgba(30, 30, 35, 0.9) 0%, rgba(15, 15, 18, 0.95) 100%);
+    backdrop-filter: blur(8px);
+}
