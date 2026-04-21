@@ -180,6 +180,7 @@ export default function App() {
   const [roomId, setRoomId] = useState('');
   const [joinId, setJoinId] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isSolo, setIsSolo] = useState(false);
   const [lobbyPlayers, setLobbyPlayers] = useState<string[]>([]);
   const [playerName, setPlayerName] = useState(() => `Piloto-${Math.floor(Math.random() * 9000 + 1000)}`);
@@ -290,7 +291,7 @@ export default function App() {
   const joinRoom = () => {
     if (!joinId) return;
     setIsSolo(false);
-    setView('joining');
+    setIsConnecting(true);
     setErrorMsg('');
     
     const iceServersConfig = {
@@ -327,6 +328,7 @@ export default function App() {
     });
 
     peer.on('error', (err) => {
+      setIsConnecting(false);
       setErrorMsg("ID de sala no encontrado o error de conexión");
       setView('lobby');
     });
@@ -352,7 +354,13 @@ export default function App() {
       if (isHost.current) {
          syncLobby();
       }
-      setView(v => (v === 'joining' ? 'room_lobby' : v));
+      setView(v => {
+          if (v === 'joining') {
+              setIsConnecting(false);
+              return 'room_lobby';
+          }
+          return v;
+      });
     });
     conn.on('data', (data: any) => {
       if (data.type === 'hello' && isHost.current) {
@@ -383,6 +391,7 @@ export default function App() {
     });
     conn.on('error', (err) => {
       if (!isHost.current) {
+          setIsConnecting(false);
           setErrorMsg("Se perdió la conexión con el anfitrión.");
           setView('lobby');
       }
@@ -1086,7 +1095,9 @@ export default function App() {
                             </div>
                             <div className="flex gap-4 w-full mt-8">
                                 <button onClick={() => setView('lobby')} className="btn-sci-fi flex-1 px-4 py-4 bg-transparent border-2 border-zinc-500 hover:border-zinc-300 hover:text-white text-zinc-400 font-bold uppercase tracking-widest text-sm">Cancelar</button>
-                                <button onClick={joinRoom} className="btn-sci-fi flex-1 px-4 py-4 bg-[#00f3ff] text-black font-bold shadow-[0_0_15px_rgba(0,243,255,0.4)] uppercase tracking-widest text-sm">Conectar</button>
+                                <button onClick={joinRoom} disabled={isConnecting} className={`btn-sci-fi flex-1 px-4 py-4 bg-[#00f3ff] text-black font-bold shadow-[0_0_15px_rgba(0,243,255,0.4)] uppercase tracking-widest text-sm ${isConnecting ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                    {isConnecting ? 'Conectando...' : 'Conectar'}
+                                </button>
                             </div>
                         </div>
                     )}
