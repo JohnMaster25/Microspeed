@@ -294,13 +294,14 @@ export default function App() {
         ]
     };
 
-    const peer = new Peer({
+    const peer = new Peer(undefined, {
         config: iceServersConfig
     });
     
     peer.on('open', (id) => {
       myIdRef.current = id;
-      const conn = peer.connect(joinId, { reliable: true });
+      // Usar canales no fiables pero veloces (estándar juego online). No forzamos reliable: true.
+      const conn = peer.connect(joinId);
       
       // Fallback timeout in case WebRTC negotiation hangs indefinitely
       const timeoutFallback = setTimeout(() => {
@@ -318,7 +319,7 @@ export default function App() {
 
     peer.on('error', (err) => {
       setIsConnecting(false);
-      setErrorMsg("ID de sala no encontrado o error de conexión");
+      setErrorMsg(`Error al unirse (${err.type}): ${err.message}`);
       setView('lobby');
     });
 
@@ -1077,7 +1078,7 @@ export default function App() {
                                 <input 
                                     type="text" 
                                     value={joinId} 
-                                    onChange={e => setJoinId(e.target.value.toUpperCase())} 
+                                    onChange={e => setJoinId(e.target.value.toUpperCase().trim())} 
                                     placeholder="CAR-XXX" 
                                     className="w-full text-center px-4 py-5 text-3xl bg-black/40 text-[#00f3ff] font-mono font-bold border-2 border-zinc-700 outline-none uppercase transition focus:border-[#00f3ff] focus:shadow-[0_0_15px_rgba(0,243,255,0.3)] placeholder-zinc-700" 
                                 />
