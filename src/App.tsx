@@ -234,14 +234,31 @@ export default function App() {
     setErrorMsg('');
     const id = `CAR-${Math.random().toString(36).substring(2, 8).toUpperCase()}`; // Ej. CAR-A1B2C3
     
-    // Configurar STUN público para garantizar conexión
+    const iceServersConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            }
+        ]
+    };
+
+    // Configurar STUN/TURN público para garantizar conexión a través de Internet
     const peer = new Peer(id, {
-        config: {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        }
+        config: iceServersConfig
     });
     
     peer.on('open', (assignedId) => {
@@ -276,13 +293,30 @@ export default function App() {
     setView('joining');
     setErrorMsg('');
     
-    const peer = new Peer(undefined, {
-        config: {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        }
+    const iceServersConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            }
+        ]
+    };
+
+    const peer = new Peer({
+        config: iceServersConfig
     });
     
     peer.on('open', (id) => {
