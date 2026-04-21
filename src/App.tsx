@@ -235,21 +235,8 @@ export default function App() {
     setErrorMsg('');
     const id = `CAR-${Math.random().toString(36).substring(2, 8).toUpperCase()}`; // Ej. CAR-A1B2C3
     
-    const iceServersConfig = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-        ]
-    };
-
-    // Configurar STUN/TURN público para garantizar conexión a través de Internet
-    const peer = new Peer(id, {
-        config: iceServersConfig
-    });
+    // Depender de los servidores STUN por defecto de PeerJS para mejorar compatibilidad con WebRTC NAT
+    const peer = new Peer(id);
     
     peer.on('open', (assignedId) => {
       setRoomId(assignedId);
@@ -283,20 +270,10 @@ export default function App() {
     setIsConnecting(true);
     setErrorMsg('');
     
-    const iceServersConfig = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-        ]
-    };
+    let connectionTimeout: any = null;
 
-    const peer = new Peer(undefined, {
-        config: iceServersConfig
-    });
+    // Conectar usando el servidor de señales por defecto
+    const peer = new Peer();
     
     peer.on('open', (id) => {
       myIdRef.current = id;
@@ -304,20 +281,21 @@ export default function App() {
       const conn = peer.connect(joinId);
       
       // Fallback timeout in case WebRTC negotiation hangs indefinitely
-      const timeoutFallback = setTimeout(() => {
+      connectionTimeout = setTimeout(() => {
           setIsConnecting(false);
-          setErrorMsg("Tiempo de espera agotado. Imposible conectar al host vía ICE/STUN.");
+          setErrorMsg("Tiempo de espera agotado. Asegúrate de que el Host sigue activo y usad redes compatibles.");
           setView('lobby');
           peer.destroy();
-      }, 10000);
+      }, 15000);
       
-      conn.on('open', () => clearTimeout(timeoutFallback));
+      conn.on('open', () => clearTimeout(connectionTimeout));
       
       connsRef.current.set(conn.peer, conn);
       setupConnection(conn);
     });
 
     peer.on('error', (err) => {
+      if (connectionTimeout) clearTimeout(connectionTimeout);
       setIsConnecting(false);
       setErrorMsg(`Error al unirse (${err.type}): ${err.message}`);
       setView('lobby');
