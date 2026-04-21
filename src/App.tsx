@@ -766,8 +766,7 @@ export default function App() {
            if (c.trail.length < 2) return;
            ctx.save();
            ctx.globalAlpha = 0.6;
-           ctx.shadowBlur = 12;
-           ctx.shadowColor = c.color;
+           // Eliminado shadowBlur/Color para mejorar el rendimiento
            ctx.fillStyle = c.color;
 
            ctx.beginPath();
@@ -821,9 +820,9 @@ export default function App() {
            ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.angle);
            ctx.beginPath(); ctx.moveTo(c.width / 2 + 4, 0); ctx.lineTo(-c.width / 2, c.height / 2 + 2); ctx.lineTo(-c.width / 4, 0); ctx.lineTo(-c.width / 2, -c.height / 2 - 2); ctx.closePath();
            ctx.fillStyle = '#1c1c20'; ctx.fill();
-           ctx.lineWidth = 1.5; ctx.strokeStyle = c.color; ctx.shadowBlur = 10; ctx.shadowColor = c.color; ctx.stroke();
+           ctx.lineWidth = 1.5; ctx.strokeStyle = c.color; ctx.stroke();
            ctx.beginPath(); ctx.moveTo(c.width / 4, 0); ctx.lineTo(-c.width / 6, c.height / 4); ctx.lineTo(-c.width / 6 + 2, 0); ctx.lineTo(-c.width / 6, -c.height / 4); ctx.closePath();
-           ctx.fillStyle = 'rgba(0, 255, 255, 0.4)'; ctx.shadowBlur = 0; ctx.fill();
+           ctx.fillStyle = 'rgba(0, 255, 255, 0.4)'; ctx.fill();
            if (c.speed > 0.1) {
            }
            ctx.restore();
@@ -867,7 +866,7 @@ export default function App() {
        }
        if (gs.uiMessage) {
            ctx.font = "900 48px sans-serif"; ctx.fillStyle = (gs.uiMessage.includes("GANADO") || gs.uiMessage.includes("GO")) ? "#00ff00" : (gs.uiMessage.includes("PERDIDO") ? "#ef4444" : "#ffffff");
-           ctx.shadowBlur = 20; ctx.shadowColor = ctx.fillStyle;
+           // Eliminado shadowBlur para rendimiento
            ctx.fillText(gs.uiMessage.toUpperCase(), canvas.width / 2, canvas.height / 2);
            if (gs.mode === "finished") {
                ctx.font = "bold 24px sans-serif"; ctx.fillStyle = "#e0e0e0"; ctx.fillText(`Tiempo total: ${(gs.lapTime / 1000).toFixed(2)}s`, canvas.width / 2, canvas.height / 2 + 50);
