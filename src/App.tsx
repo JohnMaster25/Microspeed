@@ -225,9 +225,17 @@ export default function App() {
     setIsSolo(false);
     setView('creating');
     setErrorMsg('');
-    const id = `CAR-${Math.floor(100 + Math.random() * 900)}`; // Ej. CAR-123
+    const id = `CAR-${Math.random().toString(36).substring(2, 8).toUpperCase()}`; // Ej. CAR-A1B2C3
     
-    const peer = new Peer(id);
+    // Configurar STUN público para garantizar conexión
+    const peer = new Peer(id, {
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        }
+    });
     
     peer.on('open', (assignedId) => {
       setRoomId(assignedId);
@@ -256,7 +264,14 @@ export default function App() {
     setView('joining');
     setErrorMsg('');
     
-    const peer = new Peer();
+    const peer = new Peer(undefined, {
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        }
+    });
     
     peer.on('open', (id) => {
       myIdRef.current = id;
