@@ -182,7 +182,14 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState('');
   const [isSolo, setIsSolo] = useState(false);
   const [lobbyPlayers, setLobbyPlayers] = useState<string[]>([]);
+  const [playerName, setPlayerName] = useState(() => `Piloto-${Math.floor(Math.random() * 9000 + 1000)}`);
+  const [playerNames, setPlayerNames] = useState<Record<string, string>>({});
   
+  const playerNameRef = useRef(playerName);
+  const playerNamesRef = useRef<Record<string, string>>({});
+  
+  // Sincronizar estado con ref
+  useEffect(() => { playerNameRef.current = playerName; }, [playerName]);  
   const peerRef = useRef<Peer | null>(null);
   const connsRef = useRef<Map<string, DataConnection>>(new Map());
   const isHost = useRef<boolean>(false);
@@ -241,6 +248,11 @@ export default function App() {
       setRoomId(assignedId);
       myIdRef.current = assignedId;
       setLobbyPlayers([assignedId]);
+      
+      // Host asigna su propio nombre
+      playerNamesRef.current[assignedId] = playerNameRef.current;
+      setPlayerNames({...playerNamesRef.current});
+      
       setView('room_lobby');
     });
 
@@ -290,20 +302,34 @@ export default function App() {
   };
 
   const setupConnection = (conn: DataConnection) => {
+    const syncLobby = () => {
+        const currentList = [myIdRef.current, ...Array.from(connsRef.current.keys())];
+        setLobbyPlayers(currentList);
+        const msg = { type: 'lobby_sync', players: currentList, names: playerNamesRef.current };
+        Array.from(connsRef.current.values()).forEach((c: any) => {
+            if (c.open) c.send(msg);
+        });
+    };
+
     conn.on('open', () => {
+      // Cliente envía su nombre al anfitrión
+      conn.send({ type: 'hello', name: playerNameRef.current });
+
       if (isHost.current) {
-         const currentList = [myIdRef.current, ...Array.from(connsRef.current.keys())];
-         setLobbyPlayers(currentList);
-         const msg = { type: 'lobby_sync', players: currentList };
-         Array.from(connsRef.current.values()).forEach((c: any) => {
-             if (c.open) c.send(msg);
-         });
+         syncLobby();
       }
       setView(v => (v === 'joining' ? 'room_lobby' : v));
     });
     conn.on('data', (data: any) => {
-      if (data.type === 'lobby_sync') {
+      if (data.type === 'hello' && isHost.current) {
+          // El anfitrión registra el nombre del nuevo jugador y reemite a todos
+          playerNamesRef.current[conn.peer] = data.name;
+          setPlayerNames({...playerNamesRef.current});
+          syncLobby();
+      } else if (data.type === 'lobby_sync') {
           setLobbyPlayers(data.players);
+          setPlayerNames(data.names);
+          playerNamesRef.current = data.names;
       } else if (data.type === 'start_race') {
           setView('playing');
       } else if (handleDataRef.current) {
@@ -316,12 +342,9 @@ export default function App() {
           setView('lobby');
       } else {
           connsRef.current.delete(conn.peer);
-          const currentList = [myIdRef.current, ...Array.from(connsRef.current.keys())];
-          setLobbyPlayers(currentList);
-          const msg = { type: 'lobby_sync', players: currentList };
-          Array.from(connsRef.current.values()).forEach((c: any) => {
-             if (c.open) c.send(msg);
-          });
+          delete playerNamesRef.current[conn.peer];
+          setPlayerNames({...playerNamesRef.current});
+          syncLobby();
       }
     });
     conn.on('error', (err) => {
@@ -855,7 +878,9 @@ export default function App() {
            ctx.font = isMobile ? "bold 12px monospace" : "bold 16px monospace"; 
            let yOffset = isMobile ? 80 : 60;
            Object.entries(gs.remoteCars).forEach(([id, rcar]: [string, any]) => {
-                ctx.fillStyle = rcar.color; ctx.fillText(`RIVAL: ${Math.min(rcar.lap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, yOffset); yOffset += isMobile ? 15 : 20;
+                const rawName = playerNamesRef.current[id] || "RIVAL";
+                const dName = rawName.length > 10 ? rawName.substring(0, 10) + '...' : rawName;
+                ctx.fillStyle = rcar.color; ctx.fillText(`${dName}: ${Math.min(rcar.lap, TOTAL_LAPS)}/${TOTAL_LAPS}`, canvas.width - 20, yOffset); yOffset += isMobile ? 15 : 20;
            });
        }
        ctx.textAlign = "center";
@@ -914,6 +939,16 @@ export default function App() {
                 <div className="flex flex-col items-center justify-center w-full h-full text-zinc-100 z-10">
                     {view === 'lobby' && (
                         <div className="flex flex-col gap-5 mt-10">
+                            <div className="w-[320px] flex flex-col mb-2">
+                                <label className="text-[#00f3ff] text-xs font-mono tracking-widest mb-2 uppercase opacity-80">Identificación de Piloto</label>
+                                <input 
+                                    type="text" 
+                                    className="bg-zinc-900/80 border border-[#00f3ff]/40 text-white font-mono px-4 py-3 outline-none focus:border-[#00f3ff] focus:shadow-[0_0_10px_rgba(0,243,255,0.3)] transition-all glow-text-cyan"
+                                    value={playerName} 
+                                    onChange={(e) => setPlayerName(e.target.value)}
+                                    maxLength={15}
+                                />
+                            </div>
                             <button onClick={startSolo} className="btn-sci-fi w-[320px] px-6 py-5 bg-[#f27d26] text-white text-lg font-bold shadow-lg flex justify-between items-center group relative overflow-hidden">
                                 <span className="relative z-10 tracking-widest uppercase">Contrarreloj</span>
                                 <span className="relative z-10 font-mono text-sm text-black bg-white/80 px-2 py-1 rounded-sm">1P</span>
@@ -954,15 +989,18 @@ export default function App() {
                                     <span className="font-mono text-[#00f3ff] bg-[#00f3ff]/10 px-2 py-0.5 rounded text-sm">{lobbyPlayers.length} / 7</span>
                                 </div>
                                 <ul className="flex flex-col gap-2">
-                                    {lobbyPlayers.map((p, i) => (
+                                    {lobbyPlayers.map((p, i) => {
+                                        const displayName = playerNames[p] || (p === myIdRef.current ? playerName : p);
+                                        const isMe = p === myIdRef.current;
+                                        return (
                                         <li key={i} className="flex justify-between items-center bg-zinc-900/80 border border-zinc-800 p-3 font-mono text-zinc-300 transition-colors hover:border-[#00f3ff]/50">
-                                            <span className="flex items-center gap-3">
-                                                <span className="w-2 h-2 rounded-full bg-[#00f3ff] glow-text-cyan animate-pulse"></span>
-                                                {p === myIdRef.current ? (isHost.current ? p + ' [HOST]' : p + ' [YOU]') : p}
+                                            <span className="flex items-center gap-3 truncate">
+                                                <span className="w-2 h-2 rounded-full bg-[#00f3ff] glow-text-cyan animate-pulse shrink-0"></span>
+                                                <span className="truncate">{displayName} {isMe ? (isHost.current ? '[HOST]' : '[YOU]') : ''}</span>
                                             </span>
-                                            <span className="text-xs text-[#00f3ff]/80 font-bold uppercase tracking-wider backdrop-blur-sm bg-[#00f3ff]/10 px-2 py-1">En Línea</span>
+                                            <span className="text-xs text-[#00f3ff]/80 font-bold uppercase tracking-wider backdrop-blur-sm bg-[#00f3ff]/10 px-2 py-1 shrink-0">En Línea</span>
                                         </li>
-                                    ))}
+                                    )})}
                                     {[...Array(7 - lobbyPlayers.length)].map((_, i) => (
                                         <li key={'empty'+i} className="flex justify-between items-center bg-transparent border border-dashed border-zinc-800 p-3 text-zinc-600 font-mono italic">
                                             <span>&lt; ranura_vacía &gt;</span>
